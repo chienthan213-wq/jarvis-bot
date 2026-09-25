@@ -1,19 +1,35 @@
 import os
 import logging
 import requests
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from google import genai
+
+# --- GIẢ LẬP WEB SERVER ĐỂ QUA MẶT RENDER (WEB SERVICE) ---
+class SimpleHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Jarvis & Mi Bot is alive and running!")
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(('0.0.0.0', port), SimpleHandler)
+    server.serve_forever()
+
+# Khởi chạy web server ở mộtluồng riêng (background thread)
+threading.Thread(target=run_web_server, daemon=True).start()
 
 # --- CẤU HÌNH TỰ ĐỘNG ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Khởi tạo tạo kết nối Gemini (Mi)
+# Khởi tạo kết nối Gemini (Mi)
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 def get_top_symbols(limit=30):
-    """Lấy danh sách top các cặp giao dịch USDT"""
     url = "https://api.binance.com/api/v3/ticker/24hr"
     try:
         response = requests.get(url, timeout=10)
@@ -25,7 +41,6 @@ def get_top_symbols(limit=30):
         return []
 
 def get_klines(symbol, interval='1h', limit=100):
-    """Lấy dữ liệu nến từ Binance"""
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
     try:
         response = requests.get(url, timeout=5)
@@ -44,7 +59,6 @@ def get_klines(symbol, interval='1h', limit=100):
         return []
 
 def calculate_rsi(closes, period=14):
-    """Tính toán chỉ báo RSI"""
     if len(closes) < period + 1:
         return None
     gains, losses = 0, 0
@@ -70,7 +84,6 @@ def calculate_rsi(closes, period=14):
     return 100 - (100 / (1 + rs))
 
 def calculate_ema(closes, period=9):
-    """Tính đường trung bình động EMA"""
     if len(closes) < period:
         return None
     multiplier = 2 / (period + 1)
@@ -80,21 +93,13 @@ def calculate_ema(closes, period=9):
     return ema
 
 def calculate_ichimoku_cloud(klines):
-    """Tính toán mây Ichimoku (Senkou Span A và Senkou Span B)"""
     try:
         highs = [k['high'] for k in klines]
         lows = [k['low'] for k in klines]
-        
-        # Tenkan-sen (9 periods)
         tenkan = (max(highs[-9:]) + min(lows[-9:])) / 2
-        # Kijun-sen (26 periods)
         kijun = (max(highs[-26:]) + min(lows[-26:])) / 2
-        
-        # Senkou Span A (Leading Span A)
         span_a = (tenkan + kijun) / 2
-        # Senkou Span B (Leading Span B, 52 periods)
         span_b = (max(highs[-52:]) + min(lows[-52:])) / 2
-        
         return span_a, span_b
     except Exception:
         return None, None
@@ -120,8 +125,6 @@ async def scan_market(update: Update, context: ContextTypes.DEFAULT_TYPE):
             continue
             
         closes = [k['close'] for k in klines]
-        
-        # Tính RSI và EMA của nến hiện tại và nến trước
         rsi_current = calculate_rsi(closes)
         ema_current = calculate_ema(closes, period=9)
         
@@ -132,10 +135,8 @@ async def scan_market(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if rsi_current is None or ema_current is None or rsi_prev is None or ema_prev is None:
             continue
             
-        # Kiểm tra điều kiện RSI cắt lên trên đường EMA
         rsi_cross_up = (rsi_prev <= ema_prev) and (rsi_current > ema_current)
         
-        # Kiểm tra điều kiện giá đứng TRÊN Mây Kumo (Ichimoku)
         span_a, span_b = calculate_ichimoku_cloud(klines)
         if span_a is None or span_b is None:
             continue
@@ -144,7 +145,6 @@ async def scan_market(update: Update, context: ContextTypes.DEFAULT_TYPE):
         current_price = closes[-1]
         is_above_kumo = current_price > kumo_top
         
-        # Lọc các đồng coin thỏa mãn toàn bộ điều kiện chiến thuật
         if rsi_cross_up and is_above_kumo:
             matched_signals.append(
                 f"🔥 **{symbol}** (Giá: `{current_price}`)\n"
