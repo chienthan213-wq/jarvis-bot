@@ -32,14 +32,14 @@ def get_top_100_symbols():
         return []
 
 def scan_symbol(symbol):
-    url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval=60&limit=65"
+    url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval=60&limit=70"
     try:
         resp = requests.get(url, timeout=5).json()
     except Exception:
         return None
 
     raw_list = resp.get("result", {}).get("list", [])
-    if not raw_list or len(raw_list) < 55:
+    if not raw_list or len(raw_list) < 60:
         return None
 
     raw_list.reverse()
@@ -49,13 +49,21 @@ def scan_symbol(symbol):
     df.columns = ['open', 'high', 'low', 'close', 'volume']
     df = df.astype(float)
 
+    # 1. Tinh RSI 14 (Duong Tim)
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / (loss + 1e-9)
     df['rsi'] = 100 - (100 / (1 + rs))
+
+    # 2. Tinh EMA 9 cua RSI (Duong Xanh)
     df['rsi_ema'] = df['rsi'].ewm(span=9, adjust=False).mean()
 
+    # 3. Tinh WMA 45 cua RSI (Duong Vang - Chuan cai dat cua anh)
+    weights = np.arange(1, 46)
+    df['rsi_wma'] = df['rsi'].rolling(45).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True)
+
+    # 4. Tinh Ichimoku
     df['tenkan'] = (df['high'].rolling(9).max() + df['low'].rolling(9).min()) / 2
     df['kijun']  = (df['high'].rolling(26).max() + df['low'].rolling(26).min()) / 2
     df['spanA']  = (df['tenkan'] + df['kijun']) / 2
@@ -64,16 +72,21 @@ def scan_symbol(symbol):
     cur  = df.iloc[-2]
     prev = df.iloc[-3]
 
-    rsi_cross = (prev['rsi'] <= prev['rsi_ema']) and (cur['rsi'] > cur['rsi_ema'])
-    wick_low  = df['low'].iloc[-6:-1].min()
+    wick_low = df['low'].iloc[-6:-1].min()
 
-    # 1. Bat day Xoan may (Hop 1)
-    was_deep_oversold = df['rsi'].iloc[-7:-1].min() <= 35
+    # ==========================================================
+    # DANG 1: BAT DAY XOAN MAY (Hop 1 tren OPUSDT)
+    # - RSI tim roi sau <= 35
+    # - May tuong lai xoan sang xanh hoac cuc mong (< 1.2% gia)
+    # - RSI tim cat len EMA 9 xanh va vuot len WMA 45 vang
+    # ==========================================================
+    was_oversold  = df['rsi'].iloc[-7:-1].min() <= 35
     cloud_twisted = (prev['spanA'] <= prev['spanB']) and (cur['spanA'] > cur['spanB'])
     cloud_pinched = (cur['spanA'] <= cur['spanB']) and (abs(cur['spanA'] - cur['spanB']) / cur['close'] < 0.012)
-    cross_tenkan = (cur['close'] > cur['tenkan']) and (cur['close'] > cur['open'])
+    rsi_cross_up  = (prev['rsi'] <= prev['rsi_ema']) and (cur['rsi'] > cur['rsi_ema'])
+    candle_green  = (cur['close'] > cur['tenkan']) and (cur['close'] > cur['open'])
 
-    if was_deep_oversold and (cloud_twisted or cloud_pinched) and rsi_cross and cross_tenkan:
+    if was_oversold and (cloud_twisted or cloud_pinched) and rsi_cross_up and candle_green:
         return {
             "type": "REVERSAL",
             "title": "🚀 BẮT ĐÁY XOẮN MÂY (CHÂN SÓNG)",
@@ -83,16 +96,22 @@ def scan_symbol(symbol):
             "rsi": round(cur['rsi'], 1)
         }
 
-    # 2. Tiep dien Song N tren may (Hop 2 & 3)
-    cloud_green = cur['spanA'] > cur['spanB']
-    kijun_ok    = cur['kijun'] >= prev['kijun']
-    price_above = (cur['close'] >= cur['kijun'] or cur['close'] > cur['tenkan']) and (cur['close'] > cur['open'])
-    rsi_pullback = rsi_cross and (cur['rsi'] <= 52)
+    # ==========================================================
+    # DANG 2: TIEP DIEN SONG N PULLBACK (Hop 2 tren OPUSDT)
+    # - May xanh va Kijun khong doc xuong
+    # - RSI tim nhung ve "tua" vao duong WMA 45 vang (vung 38-52)
+    # - RSI tim bat tang cat len EMA 9 xanh
+    # ==========================================================
+    cloud_green  = cur['spanA'] > cur['spanB']
+    kijun_ok     = cur['kijun'] >= prev['kijun']
+    tested_wma   = df['rsi'].iloc[-5:-1].min() <= (cur['rsi_wma'] + 2.5) # Chạm/tựa đường vàng
+    bounced_ema  = rsi_cross_up and (cur['rsi'] >= cur['rsi_wma'])
+    price_valid  = (cur['close'] >= cur['kijun'] or cur['close'] > cur['tenkan']) and (cur['close'] > cur['open'])
 
-    if cloud_green and kijun_ok and price_above and rsi_pullback:
+    if cloud_green and kijun_ok and tested_wma and bounced_ema and price_valid:
         return {
             "type": "TREND",
-            "title": "📈 TIẾP DIỄN SÓNG N (TRÊN MÂY)",
+            "title": "📈 TIẾP DIỄN SÓNG N (BẬT TỪ WMA 45)",
             "symbol": symbol,
             "price": cur['close'],
             "sl": wick_low,
