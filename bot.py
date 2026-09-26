@@ -62,72 +62,29 @@ def scan_symbol(symbol):
         cur  = df.iloc[-2]
         prev = df.iloc[-3]
 
-        # 1. Keo chuan kich hoat (RSI cat len EMA)
-        rsi_cross = (prev['rsi'] <= prev['rsi_ema']) and (cur['rsi'] > cur['rsi_ema']) and (cur['rsi'] <= 52)
-        kijun_ok = cur['kijun'] >= prev['kijun']
-        cloud_green = cur['spanA'] > cur['spanB']
-        price_ok = (cur['close'] >= cur['kijun'] or cur['close'] > cur['tenkan']) and (cur['close'] > cur['open'])
+        rsi_cross = (prev['rsi'] <= prev['rsi_ema']) and (cur['rsi'] > cur['rsi_ema'])
+        wick_low  = df['low'].iloc[-6:-1].min()
 
-        if rsi_cross and kijun_ok and cloud_green and price_ok:
-            wick_low = df['low'].iloc[-6:-1].min()
+        # ========================================================
+        # DẠNG 1: BẮT ĐÁY XOẮN MÂY (Chân sóng đảo chiều - Hộp 1)
+        # ========================================================
+        # RSI rơi sâu xuống vùng quá bán (<= 35 trong 6 nến gần nhất)
+        was_deep_oversold = df['rsi'].iloc[-7:-1].min() <= 35
+        # Mây tương lai vừa xoắn sang xanh HOẶC mây đỏ co thắt cực mỏng (< 1% giá)
+        cloud_twisted = (prev['spanA'] <= prev['spanB']) and (cur['spanA'] > cur['spanB'])
+        cloud_pinched = (cur['spanA'] <= cur['spanB']) and (abs(cur['spanA'] - cur['spanB']) / cur['close'] < 0.012)
+        # Nến xanh cắt vượt lên Tenkan
+        cross_tenkan = cur['close'] > cur['tenkan'] and cur['close'] > cur['open']
+
+        if was_deep_oversold and (cloud_twisted or cloud_pinched) and rsi_cross and cross_tenkan:
             return {
-                "type": "TRIGGER",
+                "type": "REVERSAL",
+                "title": "🚀 BẮT ĐÁY XOẮN MÂY (CHÂN SÓNG)",
                 "symbol": symbol,
                 "price": cur['close'],
                 "sl": wick_low,
                 "rsi": round(cur['rsi'], 1)
             }
 
-        # 2. Keo tiem nang (Dang nhung day 38-50 cho cat len)
-        if (38 <= cur['rsi'] <= 50) and (cur['close'] > cur['kijun']) and cloud_green:
-            return {
-                "type": "WATCHLIST",
-                "symbol": symbol,
-                "price": cur['close'],
-                "rsi": round(cur['rsi'], 1)
-            }
-
-    except Exception:
-        return None
-    return None
-
-def main():
-    print("Scanning top 100 crypto pairs...")
-    symbols = get_top_100_symbols()
-    
-    triggers = []
-    watchlists = []
-    
-    for s in symbols:
-        res = scan_symbol(s)
-        if res:
-            if res["type"] == "TRIGGER":
-                triggers.append(res)
-            elif res["type"] == "WATCHLIST":
-                watchlists.append(res)
-
-    # 1. Neu co keo chuan -> Ban tin hieu ngay
-    if triggers:
-        msg = f"🔔 *CẢNH BÁO VÀO LỆNH SÓNG N (1H)*\nPhát hiện *{len(triggers)}* cặp thỏa mãn:\n\n"
-        for m in triggers:
-            msg += f"• *{m['symbol']}*\n"
-            msg += f"   Giá: `{m['price']}` | Gợi ý SL: `{m['sl']}` | RSI: `{m['rsi']}`\n\n"
-        msg += "👉 _Mở TradingView kiểm tra lại trước khi vào lệnh!_"
-        send_telegram(msg)
-
-    # 2. Neu chua co keo chuan -> Gui danh sach coin dang nhung day dep nhat (Watchlist)
-    elif watchlists:
-        msg = f"⏱ *BÁO CÁO QUÉT TOP 100 COIN (1H)*\n"
-        msg += f"Chưa có điểm cắt qua, nhưng có *{len(watchlists)}* coin đang nhúng đáy đẹp (Watchlist):\n\n"
-        for w in watchlists[:5]:
-            msg += f"• *{w['symbol']}* | Giá: `{w['price']}` | RSI: `{w['rsi']}`\n"
-        msg += "\n👉 _Canh nến 1H đóng tiếp theo xem có tín hiệu bật tăng!_"
-        send_telegram(msg)
-
-    # 3. Neu khong co coin nao -> Gui bao cao nhip dap
-    else:
-        msg = "⏱ *BÁO CÁO (1H)*: Đã quét 100 coin trên Bybit. Thị trường chưa có setup đẹp. Bot tiếp tục canh nến tiếp theo!"
-        send_telegram(msg)
-
-if __name__ == "__main__":
-    main()
+        # ========================================================
+        # DẠNG 2: TIẾP
