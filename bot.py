@@ -22,14 +22,14 @@ def send_telegram(message):
 
 def get_top_100_symbols():
     try:
-        # Lấy danh sách từ Bybit (Không bị chặn trên GitHub Cloud)
+        # Lấy từ sàn Bybit (Không bị chặn trên máy chủ GitHub Cloud)
         url = "https://api.bybit.com/v5/market/tickers?category=linear"
         resp = requests.get(url, timeout=10).json()
         ticker_list = resp.get("result", {}).get("list", [])
         
         # Lọc các cặp USDT
         usdt_pairs = [x for x in ticker_list if x.get("symbol", "").endswith("USDT")]
-        # Sắp xếp theo khối lượng giao dịch 24h lớn nhất
+        # Sắp xếp theo khối lượng 24h lớn nhất
         usdt_pairs = sorted(usdt_pairs, key=lambda x: float(x.get("turnover24h", 0)), reverse=True)[:100]
         return [x["symbol"] for x in usdt_pairs]
     except Exception as e:
@@ -44,10 +44,10 @@ def scan_symbol(symbol):
         if not raw_list or len(raw_list) < 55:
             return None
 
-        # Bybit trả nến từ mới nhất về cũ nhất -> đảo ngược lại để tính kỹ thuật
+        # Đảo ngược dữ liệu từ cũ đến mới
         raw_list = raw_list[::-1]
         
-        # Cột: [open, high, low, close, volume]
+        # Lấy các cột giá: open, high, low, close, volume
         df = pd.DataFrame(raw_list)
         df = df.iloc]
         df.columns = ['open', 'high', 'low', 'close', 'volume']
@@ -67,11 +67,11 @@ def scan_symbol(symbol):
         df['spanA']  = (df['tenkan'] + df['kijun']) / 2
         df['spanB']  = (df['high'].rolling(52).max() + df['low'].rolling(52).min()) / 2
 
-        # Lấy cây nến vừa đóng cửa (nến áp chót)
+        # Lấy cây nến vừa đóng cửa
         cur  = df.iloc[-2]
         prev = df.iloc[-3]
 
-        # ĐIỀU KIỆN LỌC CHUẨN SÓNG N
+        # ĐIỀU KIỆN LỌC SÓNG N
         # 1. RSI cắt lên EMA ở vùng dưới 52
         rsi_cross = (prev['rsi'] <= prev['rsi_ema']) and (cur['rsi'] > cur['rsi_ema']) and (cur['rsi'] <= 52)
         # 2. Kijun không dốc xuống
