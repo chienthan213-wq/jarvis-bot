@@ -8,27 +8,50 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "ĐIỀN_TOKEN_BOT_CỦA_ANH_VÀO_�
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "ĐIỀN_CHAT_ID_CỦA_ANH_VÀO_ĐÂY")
 
 def send_telegram(message):
+    if "ĐIỀN_TOKEN" in TELEGRAM_TOKEN:
+        print("Chưa cấu hình Telegram Token!")
+        print("Nội dung tin nhắn dự kiến:\n", message)
+        return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
-        requests.post(url, json=payload, timeout=10)
+        res = requests.post(url, json=payload, timeout=10)
+        print("Kết quả gửi Telegram:", res.status_code)
     except Exception as e:
         print("Lỗi gửi Telegram:", e)
 
 def get_top_100_symbols():
-    url = "https://fapi.binance.com/fapi/v1/ticker/24hr"
-    resp = requests.get(url).json()
-    usdt_pairs = [x for x in resp if x['symbol'].endswith('USDT')]
-    # Lấy top 100 coin có khối lượng giao dịch lớn nhất
-    usdt_pairs = sorted(usdt_pairs, key=lambda x: float(x['quoteVolume']), reverse=True)[:100]
-    return [x['symbol'] for x in usdt_pairs]
+    try:
+        # Lấy danh sách từ Bybit (Không bị chặn trên GitHub Cloud)
+        url = "https://api.bybit.com/v5/market/tickers?category=linear"
+        resp = requests.get(url, timeout=10).json()
+        ticker_list = resp.get("result", {}).get("list", [])
+        
+        # Lọc các cặp USDT
+        usdt_pairs = [x for x in ticker_list if x.get("symbol", "").endswith("USDT")]
+        # Sắp xếp theo khối lượng giao dịch 24h lớn nhất
+        usdt_pairs = sorted(usdt_pairs, key=lambda x: float(x.get("turnover24h", 0)), reverse=True)[:100]
+        return [x["symbol"] for x in usdt_pairs]
+    except Exception as e:
+        print("Lỗi lấy danh sách coin:", e)
+        return []
 
 def scan_symbol(symbol):
     try:
-        url = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval=1h&limit=60"
-        data = requests.get(url, timeout=5).json()
-        df = pd.DataFrame(data, columns=['time', 'open', 'high', 'low', 'close', 'volume', '_', '_', '_', '_', '_', '_'])
-        df = df.astype({'open': float, 'high': float, 'low': float, 'close': float, 'volume': float})
+        url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval=60&limit=60"
+        resp = requests.get(url, timeout=5).json()
+        raw_list = resp.get("result", {}).get("list", [])
+        if not raw_list or len(raw_list) < 55:
+            return None
+
+        # Bybit trả nến từ mới nhất về cũ nhất -> đảo ngược lại để tính kỹ thuật
+        raw_list = raw_list[::-1]
+        
+        # Cột: [open, high, low, close, volume]
+        df = pd.DataFrame(raw_list)
+        df = df.iloc]
+        df.columns = ['open', 'high', 'low', 'close', 'volume']
+        df = df.astype(float)
 
         # 1. Tính RSI (14) & EMA (9) của RSI
         delta = df['close'].diff()
@@ -40,26 +63,25 @@ def scan_symbol(symbol):
 
         # 2. Tính Ichimoku
         df['tenkan'] = (df['high'].rolling(9).max() + df['low'].rolling(9).min()) / 2
-        df['kijun'] = (df['high'].rolling(26).max() + df['low'].rolling(26).min()) / 2
-        df['spanA'] = (df['tenkan'] + df['kijun']) / 2
-        df['spanB'] = (df['high'].rolling(52).max() + df['low'].rolling(52).min()) / 2
+        df['kijun']  = (df['high'].rolling(26).max() + df['low'].rolling(26).min()) / 2
+        df['spanA']  = (df['tenkan'] + df['kijun']) / 2
+        df['spanB']  = (df['high'].rolling(52).max() + df['low'].rolling(52).min()) / 2
 
-        # Lấy nến vừa đóng (nến áp chót)
-        cur = df.iloc[-2]
+        # Lấy cây nến vừa đóng cửa (nến áp chót)
+        cur  = df.iloc[-2]
         prev = df.iloc[-3]
 
         # ĐIỀU KIỆN LỌC CHUẨN SÓNG N
-        # A. RSI vừa cắt lên EMA ở vùng dưới 52
+        # 1. RSI cắt lên EMA ở vùng dưới 52
         rsi_cross = (prev['rsi'] <= prev['rsi_ema']) and (cur['rsi'] > cur['rsi_ema']) and (cur['rsi'] <= 52)
-        # B. Kijun không dốc xuống
+        # 2. Kijun không dốc xuống
         kijun_ok = cur['kijun'] >= prev['kijun']
-        # C. Mây tương lai xanh (Span A > Span B)
+        # 3. Mây tương lai xanh (Span A > Span B)
         cloud_green = cur['spanA'] > cur['spanB']
-        # D. Giá nằm trên Kijun hoặc vừa cắt lên Tenkan, nến xanh
+        # 4. Giá nằm trên Kijun hoặc vừa cắt lên Tenkan, nến xanh
         price_ok = (cur['close'] >= cur['kijun'] or cur['close'] > cur['tenkan']) and (cur['close'] > cur['open'])
 
         if rsi_cross and kijun_ok and cloud_green and price_ok:
-            # Đáy râu nến nhịp chỉnh (5 nến gần nhất)
             wick_low = df['low'].iloc[-6:-1].min()
             return {
                 "symbol": symbol,
@@ -72,7 +94,10 @@ def scan_symbol(symbol):
     return None
 
 def main():
+    print("Bắt đầu quét Top 100 coin...")
     symbols = get_top_100_symbols()
+    print(f"Đã lấy thành công {len(symbols)} cặp coin.")
+    
     matches = []
     for s in symbols:
         res = scan_symbol(s)
@@ -84,9 +109,10 @@ def main():
         for m in matches:
             msg += f"• *{m['symbol']}*\n   Giá: `{m['price']}` | SL đáy râu: `{m['sl']}` | RSI: `{m['rsi']}`\n\n"
         msg += "👉 _Mở TradingView kiểm tra cấu trúc trước khi vào lệnh!_"
+        print(msg)
         send_telegram(msg)
     else:
-        print("Không có cặp nào thỏa điều kiện trong giờ này.")
+        print("Không có cặp nào thỏa mãn điều kiện trong giờ này.")
 
 if __name__ == "__main__":
     main()
