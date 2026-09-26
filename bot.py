@@ -2,6 +2,7 @@ import os
 import requests
 import pandas as pd
 import numpy as np
+from datetime import datetime
 
 # Thong tin Telegram cua anh Vu
 TELEGRAM_TOKEN = "8603164997:AAFPDAbj7Fx9vj9N2QSHBUm-hbGVI_qQXqE"
@@ -62,6 +63,7 @@ def scan_symbol(symbol):
         cur  = df.iloc[-2]
         prev = df.iloc[-3]
 
+        # 1. Kèo chuẩn kích hoạt (RSI vừa cắt lên EMA)
         rsi_cross = (prev['rsi'] <= prev['rsi_ema']) and (cur['rsi'] > cur['rsi_ema']) and (cur['rsi'] <= 52)
         kijun_ok = cur['kijun'] >= prev['kijun']
         cloud_green = cur['spanA'] > cur['spanB']
@@ -70,11 +72,24 @@ def scan_symbol(symbol):
         if rsi_cross and kijun_ok and cloud_green and price_ok:
             wick_low = df['low'].iloc[-6:-1].min()
             return {
+                "type": "TRIGGER",
                 "symbol": symbol,
                 "price": cur['close'],
                 "sl": wick_low,
                 "rsi": round(cur['rsi'], 1)
             }
+
+        # 2. Kèo tiềm năng (Đang nhúng đáy hỗ trợ 38-50 chuẩn bị nảy)
+        in_pullback_zone = 38 <= cur['rsi'] <= 50
+        trend_strong = cur['close'] > cur['kijun'] and cloud_green
+        if in_pullback_zone and trend_strong:
+            return {
+                "type": "WATCHLIST",
+                "symbol": symbol,
+                "price": cur['close'],
+                "rsi": round(cur['rsi'], 1)
+            }
+
     except Exception:
         return None
     return None
@@ -84,22 +99,42 @@ def main():
     symbols = get_top_100_symbols()
     print(f"Loaded {len(symbols)} coins.")
     
-    matches = []
+    triggers = []
+    watchlists = []
+    
     for s in symbols:
         res = scan_symbol(s)
         if res:
-            matches.append(res)
+            if res["type"] == "TRIGGER":
+                triggers.append(res)
+            elif res["type"] == "WATCHLIST":
+                watchlists.append(res)
 
-    if matches:
-        msg = f"🔔 *CẢNH BÁO SETUP SÓNG N (NẾN 1H)*\nPhát hiện *{len(matches)}* cặp thỏa mãn:\n\n"
-        for m in matches:
+    now_str = datetime.utcnow().strftime("%H:%M UTC")
+
+    # Kịch bản gửi tin nhắn
+    if triggers:
+        msg = f"🔔 *CẢNH BÁO VÀO LỆNH SÓNG N ({now_str})*\n"
+        msg += f"Phát hiện *{len(triggers)}* cặp thỏa mãn điểm vào:\n\n"
+        for m in triggers:
             msg += f"• *{m['symbol']}*\n"
             msg += f"   Giá: `{m['price']}` | Gợi ý SL: `{m['sl']}` | RSI: `{m['rsi']}`\n\n"
         msg += "👉 _Mở TradingView soi lại cấu trúc trước khi vào lệnh!_"
-        print(msg)
         send_telegram(msg)
+
+    elif watchlists:
+        # Nếu chưa có kèo kích hoạt ngay, gửi danh sách coin đang chờ đẹp nhất (tối đa 5 coin)
+        msg = f"⏱ *BÁO CÁO THỊ TRƯỜNG ({now_str})*\n"
+        msg += f"Chưa có kèo cắt qua, nhưng có *{len(watchlists)}* coin đang nhúng đáy đẹp (Watchlist):\n\n"
+        for w in watchlists[:5]:
+            msg += f"• *{w['symbol']}* - Giá: `{w['price']}` | RSI: `{w['rsi']}`\n"
+        msg += "\n👉 _Canh nến 1H tiếp theo đóng cửa xem có tín hiệu bật tăng!_"
+        send_telegram(msg)
+
     else:
-        print("No matching coins found this hour.")
+        # Báo cáo nhịp đập để anh biết bot vẫn đang làm việc
+        msg = f"⏱ *BÁO CÁO ({now_str})*: Đã quét 100 coin. Thị trường chưa có setup đẹp. Bot tiếp tục canh nến tiếp theo!"
+        send_telegram(msg)
 
 if __name__ == "__main__":
     main()
