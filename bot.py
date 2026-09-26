@@ -3,7 +3,6 @@ import requests
 import pandas as pd
 import numpy as np
 
-# Thong tin Telegram cua anh Vu
 TELEGRAM_TOKEN = "8603164997:AAFPDAbj7Fx9vj9N2QSHBUm-hbGVI_qQXqE"
 TELEGRAM_CHAT_ID = "1718796081"
 
@@ -33,58 +32,107 @@ def get_top_100_symbols():
         return []
 
 def scan_symbol(symbol):
+    url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval=60&limit=65"
     try:
-        url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval=60&limit=65"
         resp = requests.get(url, timeout=5).json()
-        raw_list = resp.get("result", {}).get("list", [])
-        if not raw_list or len(raw_list) < 55:
-            return None
+    except Exception:
+        return None
 
-        raw_list.reverse()
-        
-        df = pd.DataFrame(raw_list)
-        df = df.iloc[:, 1:6]
-        df.columns = ['open', 'high', 'low', 'close', 'volume']
-        df = df.astype(float)
+    raw_list = resp.get("result", {}).get("list", [])
+    if not raw_list or len(raw_list) < 55:
+        return None
 
-        delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / (loss + 1e-9)
-        df['rsi'] = 100 - (100 / (1 + rs))
-        df['rsi_ema'] = df['rsi'].ewm(span=9, adjust=False).mean()
+    raw_list.reverse()
 
-        df['tenkan'] = (df['high'].rolling(9).max() + df['low'].rolling(9).min()) / 2
-        df['kijun']  = (df['high'].rolling(26).max() + df['low'].rolling(26).min()) / 2
-        df['spanA']  = (df['tenkan'] + df['kijun']) / 2
-        df['spanB']  = (df['high'].rolling(52).max() + df['low'].rolling(52).min()) / 2
+    df = pd.DataFrame(raw_list)
+    df = df.iloc[:, 1:6]
+    df.columns = ['open', 'high', 'low', 'close', 'volume']
+    df = df.astype(float)
 
-        cur  = df.iloc[-2]
-        prev = df.iloc[-3]
+    delta = df['close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs = gain / (loss + 1e-9)
+    df['rsi'] = 100 - (100 / (1 + rs))
+    df['rsi_ema'] = df['rsi'].ewm(span=9, adjust=False).mean()
 
-        rsi_cross = (prev['rsi'] <= prev['rsi_ema']) and (cur['rsi'] > cur['rsi_ema'])
-        wick_low  = df['low'].iloc[-6:-1].min()
+    df['tenkan'] = (df['high'].rolling(9).max() + df['low'].rolling(9).min()) / 2
+    df['kijun']  = (df['high'].rolling(26).max() + df['low'].rolling(26).min()) / 2
+    df['spanA']  = (df['tenkan'] + df['kijun']) / 2
+    df['spanB']  = (df['high'].rolling(52).max() + df['low'].rolling(52).min()) / 2
 
-        # ========================================================
-        # DẠNG 1: BẮT ĐÁY XOẮN MÂY (Chân sóng đảo chiều - Hộp 1)
-        # ========================================================
-        # RSI rơi sâu xuống vùng quá bán (<= 35 trong 6 nến gần nhất)
-        was_deep_oversold = df['rsi'].iloc[-7:-1].min() <= 35
-        # Mây tương lai vừa xoắn sang xanh HOẶC mây đỏ co thắt cực mỏng (< 1% giá)
-        cloud_twisted = (prev['spanA'] <= prev['spanB']) and (cur['spanA'] > cur['spanB'])
-        cloud_pinched = (cur['spanA'] <= cur['spanB']) and (abs(cur['spanA'] - cur['spanB']) / cur['close'] < 0.012)
-        # Nến xanh cắt vượt lên Tenkan
-        cross_tenkan = cur['close'] > cur['tenkan'] and cur['close'] > cur['open']
+    cur  = df.iloc[-2]
+    prev = df.iloc[-3]
 
-        if was_deep_oversold and (cloud_twisted or cloud_pinched) and rsi_cross and cross_tenkan:
-            return {
-                "type": "REVERSAL",
-                "title": "🚀 BẮT ĐÁY XOẮN MÂY (CHÂN SÓNG)",
-                "symbol": symbol,
-                "price": cur['close'],
-                "sl": wick_low,
-                "rsi": round(cur['rsi'], 1)
-            }
+    rsi_cross = (prev['rsi'] <= prev['rsi_ema']) and (cur['rsi'] > cur['rsi_ema'])
+    wick_low  = df['low'].iloc[-6:-1].min()
 
-        # ========================================================
-        # DẠNG 2: TIẾP
+    # 1. Bat day Xoan may (Hop 1)
+    was_deep_oversold = df['rsi'].iloc[-7:-1].min() <= 35
+    cloud_twisted = (prev['spanA'] <= prev['spanB']) and (cur['spanA'] > cur['spanB'])
+    cloud_pinched = (cur['spanA'] <= cur['spanB']) and (abs(cur['spanA'] - cur['spanB']) / cur['close'] < 0.012)
+    cross_tenkan = (cur['close'] > cur['tenkan']) and (cur['close'] > cur['open'])
+
+    if was_deep_oversold and (cloud_twisted or cloud_pinched) and rsi_cross and cross_tenkan:
+        return {
+            "type": "REVERSAL",
+            "title": "🚀 BẮT ĐÁY XOẮN MÂY (CHÂN SÓNG)",
+            "symbol": symbol,
+            "price": cur['close'],
+            "sl": wick_low,
+            "rsi": round(cur['rsi'], 1)
+        }
+
+    # 2. Tiep dien Song N tren may (Hop 2 & 3)
+    cloud_green = cur['spanA'] > cur['spanB']
+    kijun_ok    = cur['kijun'] >= prev['kijun']
+    price_above = (cur['close'] >= cur['kijun'] or cur['close'] > cur['tenkan']) and (cur['close'] > cur['open'])
+    rsi_pullback = rsi_cross and (cur['rsi'] <= 52)
+
+    if cloud_green and kijun_ok and price_above and rsi_pullback:
+        return {
+            "type": "TREND",
+            "title": "📈 TIẾP DIỄN SÓNG N (TRÊN MÂY)",
+            "symbol": symbol,
+            "price": cur['close'],
+            "sl": wick_low,
+            "rsi": round(cur['rsi'], 1)
+        }
+
+    return None
+
+def main():
+    print("Scanning top 100 crypto pairs...")
+    symbols = get_top_100_symbols()
+    print(f"Loaded {len(symbols)} coins.")
+
+    reversals = []
+    trends    = []
+
+    for s in symbols:
+        res = scan_symbol(s)
+        if res:
+            if res["type"] == "REVERSAL":
+                reversals.append(res)
+            elif res["type"] == "TREND":
+                trends.append(res)
+
+    all_matches = reversals + trends
+
+    if all_matches:
+        msg = f"🔔 *CẢNH BÁO CƠ HỘI GIAO DỊCH (1H)*\n"
+        msg += f"Phát hiện *{len(all_matches)}* coin có setup đẹp:\n\n"
+        for m in all_matches:
+            msg += f"{m['title']}\n"
+            msg += f"• *{m['symbol']}*\n"
+            msg += f"   Giá: `{m['price']}` | SL đáy râu: `{m['sl']}` | RSI: `{m['rsi']}`\n\n"
+        msg += "👉 _Mở TradingView soi lại cấu trúc trước khi vào lệnh!_"
+        print(msg)
+        send_telegram(msg)
+    else:
+        msg = "⏱ *BÁO CÁO 1H*: Đã quét 100 coin Bybit. Chưa có điểm bắt đáy Xoắn mây hay Sóng N nào. Bot tiếp tục canh nến tiếp theo!"
+        print(msg)
+        send_telegram(msg)
+
+if __name__ == "__main__":
+    main()
