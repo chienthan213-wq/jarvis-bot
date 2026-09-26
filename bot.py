@@ -2,7 +2,6 @@ import os
 import requests
 import pandas as pd
 import numpy as np
-from datetime import datetime
 
 # Thong tin Telegram cua anh Vu
 TELEGRAM_TOKEN = "8603164997:AAFPDAbj7Fx9vj9N2QSHBUm-hbGVI_qQXqE"
@@ -63,7 +62,7 @@ def scan_symbol(symbol):
         cur  = df.iloc[-2]
         prev = df.iloc[-3]
 
-        # 1. Kèo chuẩn kích hoạt (RSI vừa cắt lên EMA)
+        # 1. Keo chuan kich hoat (RSI cat len EMA)
         rsi_cross = (prev['rsi'] <= prev['rsi_ema']) and (cur['rsi'] > cur['rsi_ema']) and (cur['rsi'] <= 52)
         kijun_ok = cur['kijun'] >= prev['kijun']
         cloud_green = cur['spanA'] > cur['spanB']
@@ -79,10 +78,8 @@ def scan_symbol(symbol):
                 "rsi": round(cur['rsi'], 1)
             }
 
-        # 2. Kèo tiềm năng (Đang nhúng đáy hỗ trợ 38-50 chuẩn bị nảy)
-        in_pullback_zone = 38 <= cur['rsi'] <= 50
-        trend_strong = cur['close'] > cur['kijun'] and cloud_green
-        if in_pullback_zone and trend_strong:
+        # 2. Keo tiem nang (Dang nhung day 38-50 cho cat len)
+        if (38 <= cur['rsi'] <= 50) and (cur['close'] > cur['kijun']) and cloud_green:
             return {
                 "type": "WATCHLIST",
                 "symbol": symbol,
@@ -97,7 +94,6 @@ def scan_symbol(symbol):
 def main():
     print("Scanning top 100 crypto pairs...")
     symbols = get_top_100_symbols()
-    print(f"Loaded {len(symbols)} coins.")
     
     triggers = []
     watchlists = []
@@ -110,30 +106,27 @@ def main():
             elif res["type"] == "WATCHLIST":
                 watchlists.append(res)
 
-    now_str = datetime.utcnow().strftime("%H:%M UTC")
-
-    # Kịch bản gửi tin nhắn
+    # 1. Neu co keo chuan -> Ban tin hieu ngay
     if triggers:
-        msg = f"🔔 *CẢNH BÁO VÀO LỆNH SÓNG N ({now_str})*\n"
-        msg += f"Phát hiện *{len(triggers)}* cặp thỏa mãn điểm vào:\n\n"
+        msg = f"🔔 *CẢNH BÁO VÀO LỆNH SÓNG N (1H)*\nPhát hiện *{len(triggers)}* cặp thỏa mãn:\n\n"
         for m in triggers:
             msg += f"• *{m['symbol']}*\n"
             msg += f"   Giá: `{m['price']}` | Gợi ý SL: `{m['sl']}` | RSI: `{m['rsi']}`\n\n"
-        msg += "👉 _Mở TradingView soi lại cấu trúc trước khi vào lệnh!_"
+        msg += "👉 _Mở TradingView kiểm tra lại trước khi vào lệnh!_"
         send_telegram(msg)
 
+    # 2. Neu chua co keo chuan -> Gui danh sach coin dang nhung day dep nhat (Watchlist)
     elif watchlists:
-        # Nếu chưa có kèo kích hoạt ngay, gửi danh sách coin đang chờ đẹp nhất (tối đa 5 coin)
-        msg = f"⏱ *BÁO CÁO THỊ TRƯỜNG ({now_str})*\n"
-        msg += f"Chưa có kèo cắt qua, nhưng có *{len(watchlists)}* coin đang nhúng đáy đẹp (Watchlist):\n\n"
+        msg = f"⏱ *BÁO CÁO QUÉT TOP 100 COIN (1H)*\n"
+        msg += f"Chưa có điểm cắt qua, nhưng có *{len(watchlists)}* coin đang nhúng đáy đẹp (Watchlist):\n\n"
         for w in watchlists[:5]:
-            msg += f"• *{w['symbol']}* - Giá: `{w['price']}` | RSI: `{w['rsi']}`\n"
-        msg += "\n👉 _Canh nến 1H tiếp theo đóng cửa xem có tín hiệu bật tăng!_"
+            msg += f"• *{w['symbol']}* | Giá: `{w['price']}` | RSI: `{w['rsi']}`\n"
+        msg += "\n👉 _Canh nến 1H đóng tiếp theo xem có tín hiệu bật tăng!_"
         send_telegram(msg)
 
+    # 3. Neu khong co coin nao -> Gui bao cao nhip dap
     else:
-        # Báo cáo nhịp đập để anh biết bot vẫn đang làm việc
-        msg = f"⏱ *BÁO CÁO ({now_str})*: Đã quét 100 coin. Thị trường chưa có setup đẹp. Bot tiếp tục canh nến tiếp theo!"
+        msg = "⏱ *BÁO CÁO (1H)*: Đã quét 100 coin trên Bybit. Thị trường chưa có setup đẹp. Bot tiếp tục canh nến tiếp theo!"
         send_telegram(msg)
 
 if __name__ == "__main__":
